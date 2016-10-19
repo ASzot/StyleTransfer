@@ -1,49 +1,9 @@
 '''Neural style transfer with Keras.
-
-Run the script with:
-```
-python neural_style_transfer.py path_to_your_base_image.jpg path_to_your_reference.jpg prefix_for_results
-```
-e.g.:
-```
-python neural_style_transfer.py img/tuebingen.jpg img/starry_night.jpg results/my_result
-```
-
-It is preferable to run this script on GPU, for speed.
-
-Example result: https://twitter.com/fchollet/status/686631033085677568
-
-# Details
-
-Style transfer consists in generating an image
-with the same "content" as a base image, but with the
-"style" of a different picture (typically artistic).
-
-This is achieved through the optimization of a loss function
-that has 3 components: "style loss", "content loss",
-and "total variation loss":
-
-- The total variation loss imposes local spatial continuity between
-the pixels of the combination image, giving it visual coherence.
-
-- The style loss is where the deep learning keeps in --that one is defined
-using a deep convolutional neural network. Precisely, it consists in a sum of
-L2 distances between the Gram matrices of the representations of
-the base image and the style reference image, extracted from
-different layers of a convnet (trained on ImageNet). The general idea
-is to capture color/texture information at different spatial
-scales (fairly large scales --defined by the depth of the layer considered).
-
- - The content loss is a L2 distance between the features of the base
-image (extracted from a deep layer) and the features of the combination image,
-keeping the generated image close enough to the original one.
-
-# References
-    - [A Neural Algorithm of Artistic Style](http://arxiv.org/abs/1508.06576)
+Based off of the code at https://github.com/fchollet/keras/blob/master/examples/neural_style_transfer.py
 '''
 
 from __future__ import print_function
-from keras.preprocessing.image import load_img, img_to_array
+from app_preprocessing.image import load_img, img_to_array
 from scipy.misc import imsave
 import numpy as np
 from scipy.optimize import fmin_l_bfgs_b
@@ -52,6 +12,8 @@ import argparse
 
 from keras.applications import vgg16
 from keras import backend as K
+
+
 
 parser = argparse.ArgumentParser(description='Neural style transfer with Keras.')
 parser.add_argument('base_image_path', metavar='base', type=str,
@@ -100,7 +62,7 @@ def deprocess_image(x):
     x = np.clip(x, 0, 255).astype('uint8')
     return x
 
-# get tensor representations of our images
+# First get the tensor representation of the image.
 base_image = K.variable(preprocess_image(base_image_path))
 style_reference_image = K.variable(preprocess_image(style_reference_image_path))
 
