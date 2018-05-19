@@ -1,223 +1,172 @@
-'''Neural style transfer with Keras.
-Based off of the code at https://github.com/fchollet/keras/blob/master/examples/neural_style_transfer.py
+from keras.applications.vgg16 import VGG16
+import tensorflow as tf
+import numpy as np
+from tqdm import tqdm
+from skimage.io import imread, imsave
+from skimage.transform import resize
+import cv2
+import shutil
+import os
+
+
+im_width = 400
+im_height = 400
+mean_values = np.array([123.68, 116.779, 103.939]).reshape((1,1,3))
+shutil.rmtree('results')
+os.mkdir('./results')
+
+def save_image(path, img):
+    save_img = img + mean_values
+    save_img = save_img.astype(np.uint8)
+    if len(save_img.shape) == 4:
+        imsave(path, save_img[0])
+    else:
+        imsave(path, save_img)
+
+def preprocess_image(image):
+    image = cv2.resize(image, (im_width, im_height))
+    image = np.expand_dims(image, axis=0)
+    image = image.astype(np.float32)
+    image -= mean_values
+    return image
+
+
+im_content_path = 'mona-lisa.jpg'
+im_style_path = 'starry-night.jpg'
+
+im_content = imread(im_content_path)
+im_style = imread(im_style_path)
+
+im_content = preprocess_image(im_content)
+im_style = preprocess_image(im_style)
+
+save_image('results/style.png', im_style)
+save_image('results/content.png', im_content)
+
+def gen_starting_image(content_image, noise_ratio = 0.6):
+    noise = np.random.normal(size=(1, im_width, im_height, 3),
+            scale=np.std(content_image) * 0.1)
+
+    return (noise * noise_ratio) + (content_image * (1 - noise))
+
+im_gen = gen_starting_image(im_content)
+save_image('results/start.png', im_gen)
+
+
+content_x = tf.constant(im_content, dtype=tf.float32)
+style_x = tf.constant(im_style, dtype=tf.float32)
+
+generated_x = tf.Variable(im_gen)
+
+'''
+This is what layers VGG 16 is composed of.
+input_1
+block1_conv1
+block1_conv2
+block1_pool
+block2_conv1
+block2_conv2
+block2_pool
+block3_conv1
+block3_conv2
+block3_conv3
+block3_pool
+block4_conv1
+block4_conv2
+block4_conv3
+block4_pool
+block5_conv1
+block5_conv2
+block5_conv3
+block5_pool
+flatten
+fc1
+fc2
+predictions
 '''
 
-from __future__ import print_function
-from app_preprocessing.image import load_img, img_to_array
-from scipy.misc import imsave
-import numpy as np
-from scipy.optimize import fmin_l_bfgs_b
-import time
-import argparse
-
-from keras.applications import vgg16
-from keras import backend as K
+feature_layers = {
+        'block1_conv1': 0.5,
+        'block2_conv1': 1.0,
+        'block3_conv1': 1.5,
+        'block4_conv1': 3.0,
+        'block5_conv1': 4.0,
+    }
 
 
+def gram_matrix(x, N, C):
+    x = tf.reshape(x, [N, C])
+    return tf.matmul(tf.transpose(x), x)
 
-parser = argparse.ArgumentParser(description='Neural style transfer with Keras.')
-parser.add_argument('base_image_path', metavar='base', type=str,
-                    help='Path to the image to transform.')
-parser.add_argument('style_reference_image_path', metavar='ref', type=str,
-                    help='Path to the style reference image.')
-parser.add_argument('result_prefix', metavar='res_prefix', type=str,
-                    help='Prefix for the saved results.')
+vgg_content = VGG16(weights='imagenet', input_tensor=content_x)
+vgg_style = VGG16(weights='imagenet', input_tensor=style_x)
+vgg_combined = VGG16(weights='imagenet', input_tensor=generated_x)
 
-args = parser.parse_args()
-base_image_path = args.base_image_path
-style_reference_image_path = args.style_reference_image_path
-result_prefix = args.result_prefix
+use_layer = 'block4_conv1'
 
-# these are the weights of the different loss components
-total_variation_weight = 1.
-style_weight = 1.
-content_weight = 0.025
+learning_rate = 2.0
+alpha = 100
+beta = 5
 
-# dimensions of the generated picture.
-img_nrows = 400
-img_ncols = 400
-assert img_ncols == img_nrows, 'Due to the use of the Gram matrix, width and height must match.'
 
-# util function to open, resize and format pictures into appropriate tensors
-def preprocess_image(image_path):
-    img = load_img(image_path, target_size=(img_nrows, img_ncols))
-    img = img_to_array(img)
-    img = np.expand_dims(img, axis=0)
-    img = vgg16.preprocess_input(img)
-    return img
+with tf.Session() as sess:
+    content_layers = dict([(layer.name, layer.output) for layer in vgg_content.layers])
+    style_layers = dict([(layer.name, layer.output) for layer in vgg_style.layers])
+    combined_layers = dict([(layer.name, layer.output) for layer in vgg_combined.layers])
 
-# util function to convert a tensor into a valid image
-def deprocess_image(x):
-    if K.image_dim_ordering() == 'th':
-        x = x.reshape((3, img_nrows, img_ncols))
-        x = x.transpose((1, 2, 0))
-    else:
-        x = x.reshape((img_nrows, img_ncols, 3))
-    # Remove zero-center by mean pixel
-    x[:, :, 0] += 103.939
-    x[:, :, 1] += 116.779
-    x[:, :, 2] += 123.68
-    # 'BGR'->'RGB'
-    x = x[:, :, ::-1]
-    x = np.clip(x, 0, 255).astype('uint8')
-    return x
+    content_transformed = content_layers[use_layer]
+    combined_transformed = combined_layers[use_layer]
 
-# First get the tensor representation of the image.
-base_image = K.variable(preprocess_image(base_image_path))
-style_reference_image = K.variable(preprocess_image(style_reference_image_path))
+    content_loss = tf.reduce_sum(tf.square(content_transformed -
+        combined_transformed)) / 2
 
-# this will contain our generated image
-if K.image_dim_ordering() == 'th':
-    combination_image = K.placeholder((1, 3, img_nrows, img_ncols))
-else:
-    combination_image = K.placeholder((1, img_nrows, img_ncols, 3))
 
-# combine the 3 images into a single Keras tensor
-input_tensor = K.concatenate([base_image,
-                              style_reference_image,
-                              combination_image], axis=0)
+    style_loss = tf.get_variable("style_loss", dtype=tf.float32,
+              initializer=tf.constant(0.0))
 
-# build the VGG16 network with our 3 images as input
-# the model will be loaded with pre-trained ImageNet weights
-model = vgg16.VGG16(input_tensor=input_tensor,
-                    weights='imagenet', include_top=False)
-print('Model loaded.')
+    for feature_layer, weight in feature_layers.items():
+        style_layer = style_layers[feature_layer]
+        combined_layer = combined_layers[feature_layer]
 
-# get the symbolic outputs of each "key" layer (we gave them unique names).
-outputs_dict = dict([(layer.name, layer.output) for layer in model.layers])
+        _, width, height, C = style_layer.get_shape()
 
-# compute the neural style loss
-# first we need to define 4 util functions
+        N = width * height
 
-# the gram matrix of an image tensor (feature-wise outer product)
-def gram_matrix(x):
-    assert K.ndim(x) == 3
-    if K.image_dim_ordering() == 'th':
-        features = K.batch_flatten(x)
-    else:
-        features = K.batch_flatten(K.permute_dimensions(x, (2, 0, 1)))
-    gram = K.dot(features, K.transpose(features))
-    return gram
+        style_g = gram_matrix(style_layer, N, C)
+        combined_g = gram_matrix(combined_layer, N, C)
 
-# the "style loss" is designed to maintain
-# the style of the reference image in the generated image.
-# It is based on the gram matrices (which capture style) of
-# feature maps from the style reference image
-# and from the generated image
-def style_loss(style, combination):
-    assert K.ndim(style) == 3
-    assert K.ndim(combination) == 3
-    S = gram_matrix(style)
-    C = gram_matrix(combination)
-    channels = 3
-    size = img_nrows * img_ncols
-    return K.sum(K.square(S - C)) / (4. * (channels ** 2) * (size ** 2))
+        N = N.value
+        C = C.value
 
-# an auxiliary loss function
-# designed to maintain the "content" of the
-# base image in the generated image
-def content_loss(base, combination):
-    return K.sum(K.square(combination - base))
+        E_l = tf.reduce_sum(tf.square(style_g - combined_g)) / (4 * (N ** 2) *
+                (C ** 2))
 
-# the 3rd loss function, total variation loss,
-# designed to keep the generated image locally coherent
-def total_variation_loss(x):
-    assert K.ndim(x) == 4
-    if K.image_dim_ordering() == 'th':
-        a = K.square(x[:, :, :img_nrows-1, :img_ncols-1] - x[:, :, 1:, :img_ncols-1])
-        b = K.square(x[:, :, :img_nrows-1, :img_ncols-1] - x[:, :, :img_nrows-1, 1:])
-    else:
-        a = K.square(x[:, :img_nrows-1, :img_ncols-1, :] - x[:, 1:, :img_ncols-1, :])
-        b = K.square(x[:, :img_nrows-1, :img_ncols-1, :] - x[:, :img_nrows-1, 1:, :])
-    return K.sum(K.pow(a + b, 1.25))
+        style_loss += (weight * E_l)
 
-# combine these loss functions into a single scalar
-loss = K.variable(0.)
-layer_features = outputs_dict['block4_conv2']
-base_image_features = layer_features[0, :, :, :]
-combination_features = layer_features[2, :, :, :]
-loss += content_weight * content_loss(base_image_features,
-                                      combination_features)
+    loss = (beta * content_loss) + (alpha * style_loss)
 
-feature_layers = ['block1_conv1', 'block2_conv1',
-                  'block3_conv1', 'block4_conv1',
-                  'block5_conv1']
-for layer_name in feature_layers:
-    layer_features = outputs_dict[layer_name]
-    style_reference_features = layer_features[1, :, :, :]
-    combination_features = layer_features[2, :, :, :]
-    sl = style_loss(style_reference_features, combination_features)
-    loss += (style_weight / len(feature_layers)) * sl
-loss += total_variation_weight * total_variation_loss(combination_image)
+    opt = tf.train.AdamOptimizer(learning_rate).minimize(loss,
+            var_list=[generated_x])
 
-# get the gradients of the generated image wrt the loss
-grads = K.gradients(loss, combination_image)
 
-outputs = [loss]
-if type(grads) in {list, tuple}:
-    outputs += grads
-else:
-    outputs.append(grads)
+    sess.run(tf.global_variables_initializer())
 
-f_outputs = K.function([combination_image], outputs)
+    num_iters = int(1e4)
+    save_interval = 100
+    for update_i in tqdm(range(1, num_iters + 1)):
+        loss_val, gen_im, _ = sess.run([loss, generated_x, opt], feed_dict={
+            })
 
-def eval_loss_and_grads(x):
-    if K.image_dim_ordering() == 'th':
-        x = x.reshape((1, 3, img_nrows, img_ncols))
-    else:
-        x = x.reshape((1, img_nrows, img_ncols, 3))
-    outs = f_outputs([x])
-    loss_value = outs[0]
-    if len(outs[1:]) == 1:
-        grad_values = outs[1].flatten().astype('float64')
-    else:
-        grad_values = np.array(outs[1:]).flatten().astype('float64')
-    return loss_value, grad_values
+        print(loss_val)
 
-# this Evaluator class makes it possible
-# to compute loss and gradients in one pass
-# while retrieving them via two separate functions,
-# "loss" and "grads". This is done because scipy.optimize
-# requires separate functions for loss and gradients,
-# but computing them separately would be inefficient.
-class Evaluator(object):
-    def __init__(self):
-        self.loss_value = None
-        self.grads_values = None
+        if update_i % save_interval == 0:
+            save_image('results/gen_%i.png' % update_i, gen_im)
 
-    def loss(self, x):
-        assert self.loss_value is None
-        loss_value, grad_values = eval_loss_and_grads(x)
-        self.loss_value = loss_value
-        self.grad_values = grad_values
-        return self.loss_value
 
-    def grads(self, x):
-        assert self.loss_value is not None
-        grad_values = np.copy(self.grad_values)
-        self.loss_value = None
-        self.grad_values = None
-        return grad_values
 
-evaluator = Evaluator()
 
-# run scipy-based optimization (L-BFGS) over the pixels of the generated image
-# so as to minimize the neural style loss
-if K.image_dim_ordering() == 'th':
-    x = np.random.uniform(0, 255, (1, 3, img_nrows, img_ncols)) - 128.
-else:
-    x = np.random.uniform(0, 255, (1, img_nrows, img_ncols, 3)) - 128.
 
-for i in range(10):
-    print('Start of iteration', i)
-    start_time = time.time()
-    x, min_val, info = fmin_l_bfgs_b(evaluator.loss, x.flatten(),
-                                     fprime=evaluator.grads, maxfun=20)
-    print('Current loss value:', min_val)
-    # save current generated image
-    img = deprocess_image(x.copy())
-    fname = result_prefix + '_at_iteration_%d.png' % i
-    imsave(fname, img)
-    end_time = time.time()
-    print('Image saved as', fname)
-    print('Iteration %d completed in %ds' % (i, end_time - start_time))
+
+
+
+
