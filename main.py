@@ -15,7 +15,8 @@ im_height = 400
 mean_pixel = np.array([123.68, 116.779, 103.939]).reshape((1,1,3))
 
 # Clear out the results directory.
-shutil.rmtree('results')
+if os.path.exists('results'):
+    shutil.rmtree('results')
 os.mkdir('./results')
 
 def save_image(path, img):
@@ -43,8 +44,8 @@ def gram_matrix(x):
     return tf.matmul(tf.transpose(m), m)
 
 
-content = imread('mona-lisa.jpg')
-style = imread('starry-night.jpg')
+content = imread('imgs/content_a.jpeg')
+style = imread('imgs/style_a.jpeg')
 
 # Download the weights from http://www.vlfeat.org/matconvnet/models/imagenet-vgg-verydeep-19.mat
 # Put them in the current directory.
@@ -132,7 +133,7 @@ with tf.Session() as sess:
     i = 0
     def callback(total_loss, content_loss, style_loss):
         global i
-        print('%i), total: %.2f, style: %.2f, content%.2f' % (i, total_loss, content_loss, style_loss))
+        print('%i), total: %.2f, style: %.2f, content: %.2f' % (i, total_loss, content_loss, style_loss))
         i += 1
 
     optimizer.minimize(sess, feed_dict={content_x: im_content, style_x: im_style},
