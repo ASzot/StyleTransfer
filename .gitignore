@@ -1,2 +1,4 @@
 imgs
 results
+__pycache__
+*.mat
